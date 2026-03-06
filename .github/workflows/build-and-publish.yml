@@ -1,0 +1,125 @@
+name: Build and Publish Flatpaks
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build Flatpaks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Flatpak and flatpak-builder
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y flatpak flatpak-builder
+
+      - name: Add Flathub remote
+        run: |
+          flatpak remote-add --user --if-not-exists flathub \
+            https://flathub.org/repo/flathub.flatpakrepo
+
+      - name: Install Flatpak runtimes
+        run: |
+          flatpak install --user -y flathub \
+            org.freedesktop.Platform//23.08 \
+            org.freedesktop.Sdk//23.08
+
+      - name: Build Flatpaks
+        run: |
+          mkdir -p repo
+          for manifest in manifests/*.json; do
+            [ -f "$manifest" ] || continue
+            echo "Building $manifest..."
+            app_id=$(python3 -c "
+import json, sys
+with open('$manifest') as f:
+    m = json.load(f)
+print(m['app-id'])
+")
+            flatpak-builder \
+              --user \
+              --install-deps-from=flathub \
+              --repo=repo \
+              --force-clean \
+              "build/${app_id}" \
+              "$manifest"
+          done
+
+      - name: Import GPG signing key
+        id: gpg
+        run: |
+          if [ -n "$GPG_PRIVATE_KEY" ]; then
+            echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+            GPG_KEY_ID=$(gpg --list-secret-keys --with-colons \
+              | awk -F: '/^sec/{print $5}' | head -1)
+            echo "key_id=$GPG_KEY_ID" >> "$GITHUB_OUTPUT"
+            echo "has_key=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_key=false" >> "$GITHUB_OUTPUT"
+            echo "No GPG key found, repository will not be signed."
+          fi
+
+      - name: Update repository metadata
+        run: |
+          if [ "${{ steps.gpg.outputs.has_key }}" = "true" ]; then
+            flatpak build-update-repo \
+              --gpg-sign="${{ steps.gpg.outputs.key_id }}" \
+              --generate-static-deltas repo
+            echo "Repository signed with GPG key ${{ steps.gpg.outputs.key_id }}"
+          else
+            flatpak build-update-repo --generate-static-deltas repo
+            echo "Repository built without GPG signing"
+          fi
+
+      - name: Generate .flatpakrepo file
+        run: |
+          REPO_URL="https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/"
+          {
+            printf '[Flatpak Repo]\n'
+            printf 'Title=imjuzcy'"'"'s Flatpaks\n'
+            printf 'Url=%s\n' "$REPO_URL"
+            printf 'Homepage=https://github.com/%s\n' "${{ github.repository }}"
+            printf 'Description=A repository of Flatpaks by imjuzcy\n'
+            printf 'Comment=Install and keep applications up to date from imjuzcy'"'"'s Flatpak repository\n'
+            printf 'Icon=https://github.com/%s.png\n' "${{ github.repository_owner }}"
+          } > repo/imjuzcy-flatpaks.flatpakrepo
+          if [ "${{ steps.gpg.outputs.has_key }}" = "true" ]; then
+            GPG_KEY_B64=$(gpg --export "${{ steps.gpg.outputs.key_id }}" | base64 -w 0)
+            printf 'GPGKey=%s\n' "$GPG_KEY_B64" >> repo/imjuzcy-flatpaks.flatpakrepo
+            gpg --export "${{ steps.gpg.outputs.key_id }}" > repo/pubkey.gpg
+          fi
+
+      - name: Upload repository artifact
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: repo
+
+  publish:
+    name: Publish to GitHub Pages
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

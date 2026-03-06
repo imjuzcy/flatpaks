@@ -1,0 +1,27 @@
+{
+  "app-id": "io.github.imjuzcy.HelloWorld",
+  "runtime": "org.freedesktop.Platform",
+  "runtime-version": "23.08",
+  "sdk": "org.freedesktop.Sdk",
+  "command": "hello-world",
+  "finish-args": [],
+  "modules": [
+    {
+      "name": "hello-world",
+      "buildsystem": "simple",
+      "build-commands": [
+        "install -Dm755 hello-world.sh /app/bin/hello-world"
+      ],
+      "sources": [
+        {
+          "type": "script",
+          "dest-filename": "hello-world.sh",
+          "commands": [
+            "#!/bin/sh",
+            "echo 'Hello, World! This app was installed from the imjuzcy Flatpak repository.'"
+          ]
+        }
+      ]
+    }
+  ]
+}
